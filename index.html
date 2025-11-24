@@ -36,7 +36,7 @@
                 <div class="bg-blue-600 text-white p-2 rounded-lg">
                     <i class="fa-solid fa-calendar-days"></i>
                 </div>
-                <h1 class="text-xl font-bold tracking-tight text-gray-900">PlanIt</h1>
+                <h1 class="text-xl font-bold tracking-tight text-gray-900" id="app-title">PlanIt</h1>
             </div>
             <div id="header-actions" class="flex gap-2">
                 <!-- Dynamic Buttons injected here -->
@@ -73,13 +73,12 @@
         // --- 1. CONFIGURATION ---
         // TODO: REPLACE THIS WITH YOUR FIREBASE CONFIG
         const firebaseConfig = {
-          apiKey: "AIzaSyBsAeABlr_WtDwGgrYQJWSEYPnsERpN8kQ",
-          authDomain: "planit-8962e.firebaseapp.com",
-          projectId: "planit-8962e",
-          storageBucket: "planit-8962e.firebasestorage.app",
-          messagingSenderId: "796305375372",
-          appId: "1:796305375372:web:4e7af1f6be01a2f507fba9",
-          measurementId: "G-J19F59WR92"
+            apiKey: "", 
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
         };
 
         // Initialize Firebase
@@ -94,6 +93,7 @@
         let unsubscribeGroup = null;
         let selectedPlace = null; // Currently selected tool/place
         let isAuthReady = false; // New flag to track authentication status
+        let viewMode = 'columns'; // Default to mobile-friendly column view
         
         // Use a fixed App ID for the path to ensure consistency
         const APP_ID = 'planit-scheduler-v1';
@@ -123,7 +123,8 @@
 
             } catch (error) {
                 console.error("Auth Error:", error);
-                alert("Could not connect to database. Check console.");
+                // Replaced alert with console message as per instructions
+                console.error("Could not connect to database. Check console.");
             }
         }
 
@@ -148,6 +149,7 @@
         function loadLandingView() {
             if (unsubscribeGroup) unsubscribeGroup(); // Stop listening to old group
             currentGroupId = null;
+            document.getElementById('app-title').textContent = 'PlanIt'; // Reset header title
             
             const html = `
                 <div class="h-full flex flex-col items-center justify-center p-6 bg-gradient-to-br from-blue-50 to-indigo-50">
@@ -188,6 +190,8 @@
                 
                 if (docSnap.exists()) {
                     groupData = docSnap.data();
+                    // Update header title to include group name
+                    document.getElementById('app-title').textContent = groupData.name || 'PlanIt'; 
                     renderScheduler();
                     checkUserName(); // Ask for name if not set
                 } else {
@@ -204,7 +208,7 @@
         // Create Group
         window.createGroup = async () => {
             const name = document.getElementById('new-group-name').value;
-            if (!name) return alert("Please enter a group name");
+            if (!name) return;
 
             const newGroupId = 'g-' + Math.random().toString(36).substr(2, 9);
             
@@ -216,6 +220,7 @@
             ];
 
             try {
+                // 1. Create the document
                 await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'groups', newGroupId), {
                     name: name,
                     createdAt: new Date().toISOString(),
@@ -224,10 +229,12 @@
                     schedule: {} // Map of "userId_date" -> placeId
                 });
                 
+                // 2. Update the hash to trigger routing and load the view
                 window.location.hash = `group/${newGroupId}`;
+
             } catch (e) {
                 console.error(e);
-                alert("Error creating group. Check config.");
+                console.error("Error creating group. Check config.");
             }
         };
 
@@ -271,7 +278,9 @@
                 'bg-purple-100 text-purple-800 border-purple-200',
                 'bg-pink-100 text-pink-800 border-pink-200',
                 'bg-yellow-100 text-yellow-800 border-yellow-200',
-                'bg-teal-100 text-teal-800 border-teal-200'
+                'bg-teal-100 text-teal-800 border-teal-200',
+                'bg-red-100 text-red-800 border-red-200',
+                'bg-indigo-100 text-indigo-800 border-indigo-200'
             ];
             const randomColor = colors[Math.floor(Math.random() * colors.length)];
             
@@ -296,7 +305,7 @@
             textarea.select();
             document.execCommand('copy'); // Fallback for iframe restrictions
             document.body.removeChild(textarea);
-            alert("Link copied to clipboard! Send it to your group.");
+            console.info("Link copied to clipboard! Send it to your group.");
         }
 
         // Select Tool/Place
@@ -304,11 +313,18 @@
             selectedPlace = placeId;
             renderScheduler(); // Re-render to show selection state
         }
+        
+        // Toggle View Mode
+        window.setViewMode = (mode) => {
+            viewMode = mode;
+            localStorage.setItem('planit_viewmode', mode); // Persist view mode
+            renderScheduler();
+        }
 
         // Update Schedule Cell
         window.toggleCell = async (dateStr) => {
             // CRITICAL GUARD CLAUSE: Ensure user and group data are ready before writing
-            if (!currentUser) return alert("Still connecting. Please wait a moment.");
+            if (!currentUser) return console.warn("Still connecting. Please wait a moment.");
             if (!currentGroupId || !groupData) return;
 
             const key = `${currentUser.uid}_${dateStr}`;
@@ -320,32 +336,27 @@
             if (currentVal === selectedPlace) {
                 newVal = null; 
             } else if (!selectedPlace) {
-                // If no place selected, alert user
-                alert("Select a place from the top bar first!");
+                // If no place selected, warn user
+                console.warn("Select a place from the top bar first!");
                 return;
             }
 
-            // Optimistic update: Firestore listener will handle the official update
-            
             const groupRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'groups', currentGroupId);
             
             const updatePayload = {};
-            // If newVal is null, mark it as CLEARED for simplicity (Firestore won't accept null in an object key path update)
-            updatePayload[`schedule.${key}`] = newVal === null ? "CLEARED" : newVal;
+            // Setting to null/undefined doesn't remove the field in updateDoc for nested fields.
+            // We set it explicitly to null to indicate a clearance in the DB structure.
+            updatePayload[`schedule.${key}`] = newVal;
             
-
             try {
-                 // Update the UI optimistically right before the write to prevent the flash of null
-                 // Note: We don't have a good way to update groupData directly without breaking the immutable structure of the snapshot,
-                 // so we rely on the Firestore listener which is very fast.
                  await updateDoc(groupRef, updatePayload);
             } catch (e) {
                 console.error("Failed to update schedule:", e);
-                alert("Failed to save schedule change. Check console.");
+                console.error("Failed to save schedule change. Check console.");
             }
         }
 
-        // --- 6. RENDERING ---
+        // --- 6. RENDERING HELPER FUNCTIONS ---
         
         function getDates() {
             const dates = [];
@@ -362,13 +373,192 @@
         function formatDateKey(date) {
             return date.toISOString().split('T')[0];
         }
+        
+        function renderToolbar(places) {
+            return `
+                <div class="bg-white border-b border-gray-200 p-4 flex gap-3 overflow-x-auto no-scrollbar items-center">
+                    <span class="text-xs font-bold text-gray-400 uppercase tracking-wider mr-2">I am at:</span>
+                    ${places.map(p => `
+                        <button onclick="window.selectPlace('${p.id}')" 
+                            class="${p.color} px-4 py-2 rounded-full border text-sm font-semibold whitespace-nowrap transition-all ${selectedPlace === p.id ? 'ring-2 ring-offset-2 ring-gray-400 scale-105 shadow-md' : 'opacity-70 hover:opacity-100'}">
+                            ${p.name}
+                        </button>
+                    `).join('')}
+                    
+                    <button onclick="window.addPlace()" class="w-8 h-8 flex items-center justify-center rounded-full border border-dashed border-gray-400 text-gray-400 hover:text-blue-500 hover:border-blue-500 transition">
+                        <i class="fa-solid fa-plus"></i>
+                    </button>
+                    
+                    <div class="ml-auto text-sm text-gray-500 hidden md:block">
+                        Select a place, then tap the grid.
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderRowView(dates, userIds, users, schedule, places) {
+            // Horizontal/Desktop View
+            const renderDateHeaders = dates.map(d => {
+                const isToday = d.toDateString() === new Date().toDateString();
+                const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+                return `
+                    <div class="w-20 md:w-24 p-2 flex-shrink-0 text-center border-r border-gray-100 ${isToday ? 'bg-blue-50' : ''} ${isWeekend ? 'bg-gray-50' : ''}">
+                        <div class="text-xs text-gray-400 uppercase font-bold">${d.toLocaleDateString('en-US', {weekday: 'short'})}</div>
+                        <div class="text-sm font-bold text-gray-700 ${isToday ? 'text-blue-600' : ''}">${d.getDate()}</div>
+                    </div>
+                `;
+            }).join('');
+
+            const renderUserRows = userIds.map(uid => {
+                const user = users[uid];
+                const isMe = currentUser && currentUser.uid === uid;
+                
+                const renderCells = dates.map(d => {
+                    const dateKey = formatDateKey(d);
+                    const schedKey = `${uid}_${dateKey}`;
+                    const placeId = schedule[schedKey] === 'CLEARED' ? null : schedule[schedKey]; 
+                    const place = (placeId) ? places.find(p => p.id === placeId) : null;
+                    
+                    const isEditable = isMe;
+                    const isToday = d.toDateString() === new Date().toDateString();
+                    
+                    return `
+                        <div onclick="${isEditable ? `window.toggleCell('${dateKey}')` : ''}" 
+                            class="w-20 md:w-24 h-14 md:h-16 flex-shrink-0 border-r border-gray-100 border-dotted relative flex items-center justify-center transition-all
+                                ${isEditable ? 'cursor-pointer hover:bg-gray-100' : 'cursor-default'}
+                                ${isToday ? 'bg-blue-50/30' : ''}
+                            ">
+                            
+                            ${place ? `
+                                <div class="${place.color} text-xs font-semibold px-2 py-1 rounded shadow-sm max-w-[90%] truncate text-center select-none pointer-events-none transform transition-transform group-hover:scale-105">
+                                    ${place.name}
+                                </div>
+                            ` : `
+                                ${isEditable ? '<div class="opacity-0 hover:opacity-100 text-gray-300 text-xl">+</div>' : ''}
+                            `}
+                        </div>
+                    `;
+                }).join('');
+                                        
+                return `
+                    <div class="flex border-b border-gray-100 hover:bg-gray-50 transition-colors group">
+                        <!-- User Name Column -->
+                        <div class="w-32 md:w-48 p-3 flex-shrink-0 border-r border-gray-200 flex items-center bg-white z-10 sticky left-0 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
+                            <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-gray-200 to-gray-300 flex items-center justify-center text-gray-600 font-bold text-xs mr-3">
+                                ${user.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div class="truncate">
+                                <div class="text-sm font-medium text-gray-900 truncate">${user.name} ${isMe ? '<span class="text-xs text-blue-500 bg-blue-50 px-1 rounded ml-1">(You)</span>' : ''}</div>
+                            </div>
+                        </div>
+
+                        <!-- Date Cells -->
+                        ${renderCells}
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="inline-block min-w-full bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <!-- Header Row (Dates) -->
+                    <div class="flex border-b border-gray-200">
+                        <div class="w-32 md:w-48 p-3 flex-shrink-0 bg-gray-50 border-r border-gray-200 font-bold text-gray-500 text-sm flex items-center">
+                            Team Member
+                        </div>
+                        ${renderDateHeaders}
+                    </div>
+                    <!-- User Rows -->
+                    ${renderUserRows}
+                </div>
+            `;
+        }
+        
+        function renderColumnView(dates, userIds, users, schedule, places) {
+            // Vertical/Mobile-Friendly View
+            const myId = currentUser ? currentUser.uid : null;
+
+            const renderDateColumns = dates.map(d => {
+                const dateKey = formatDateKey(d);
+                const isToday = d.toDateString() === new Date().toDateString();
+                const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+
+                const renderUserCards = userIds.map(uid => {
+                    const user = users[uid];
+                    const isMe = myId === uid;
+                    const schedKey = `${uid}_${dateKey}`;
+                    const placeId = schedule[schedKey] === 'CLEARED' ? null : schedule[schedKey]; 
+                    const place = (placeId) ? places.find(p => p.id === placeId) : null;
+                    const isEditable = isMe;
+                    
+                    return `
+                        <div onclick="${isEditable ? `window.toggleCell('${dateKey}')` : ''}" 
+                            class="p-3 mb-2 rounded-lg border flex justify-between items-center transition-all ${isEditable ? 'cursor-pointer hover:bg-gray-100' : 'cursor-default'} ${isMe ? 'bg-white border-blue-200' : 'bg-white border-gray-200'}">
+                            
+                            <!-- User Info -->
+                            <div class="flex items-center">
+                                <div class="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 font-bold text-xs mr-3">
+                                    ${user.name.charAt(0).toUpperCase()}
+                                </div>
+                                <div class="text-sm font-medium text-gray-900">${user.name} ${isMe ? '<span class="text-xs text-blue-500 ml-1">(You)</span>' : ''}</div>
+                            </div>
+
+                            <!-- Place Indicator -->
+                            ${place ? `
+                                <div class="${place.color} text-xs font-semibold px-2 py-1 rounded shadow-sm truncate text-center select-none">
+                                    ${place.name}
+                                </div>
+                            ` : `
+                                ${isEditable ? '<div class="text-sm text-gray-400">Select Place...</div>' : '<div class="text-sm text-gray-300">?</div>'}
+                            `}
+                        </div>
+                    `;
+                }).join('');
+
+                return `
+                    <div class="bg-white rounded-xl shadow-md p-4 mb-6 border ${isToday ? 'border-blue-400 shadow-lg' : 'border-gray-200'}">
+                        <!-- Date Header -->
+                        <div class="pb-3 mb-3 border-b ${isToday ? 'border-blue-200' : 'border-gray-200'}">
+                            <h3 class="text-lg font-bold ${isToday ? 'text-blue-600' : 'text-gray-800'}">
+                                ${d.toLocaleDateString('en-US', {weekday: 'long'})}
+                            </h3>
+                            <p class="text-sm text-gray-500">${d.toLocaleDateString('en-US', {month: 'short', day: 'numeric'})} ${isWeekend ? '— Weekend' : ''}</p>
+                        </div>
+                        
+                        <!-- User Cards for this Date -->
+                        ${renderUserCards}
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="max-w-md mx-auto">
+                    ${renderDateColumns}
+                </div>
+            `;
+        }
+
+        // --- 7. MAIN RENDER FUNCTION ---
 
         function renderScheduler() {
             if (!groupData) return;
+            
+            // Load view mode preference from local storage on render
+            const storedViewMode = localStorage.getItem('planit_viewmode');
+            if (storedViewMode) viewMode = storedViewMode;
 
             // Header Actions
             const actionsDiv = document.getElementById('header-actions');
             actionsDiv.innerHTML = `
+                <!-- View Toggle -->
+                <div class="inline-flex rounded-lg shadow-sm bg-gray-100 p-0.5 border border-gray-200">
+                    <button onclick="window.setViewMode('columns')" title="Mobile-Friendly Vertical View" class="px-3 py-1 text-sm font-medium rounded-lg transition ${viewMode === 'columns' ? 'bg-white text-blue-600 shadow-md' : 'text-gray-500 hover:bg-gray-200'}">
+                        <i class="fa-solid fa-grip-vertical"></i> Columns
+                    </button>
+                    <button onclick="window.setViewMode('rows')" title="Desktop Horizontal Grid View" class="px-3 py-1 text-sm font-medium rounded-lg transition ${viewMode === 'rows' ? 'bg-white text-blue-600 shadow-md' : 'text-gray-500 hover:bg-gray-200'}">
+                        <i class="fa-solid fa-grip-lines"></i> Rows
+                    </button>
+                </div>
+                
                 <button onclick="window.copyLink()" class="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-3 py-2 rounded-lg hover:bg-indigo-200 transition font-medium text-sm">
                     <i class="fa-solid fa-link"></i> <span>Invite</span>
                 </button>
@@ -389,95 +579,14 @@
             let html = `
                 <div class="flex flex-col h-full">
                     <!-- TOOLBAR (Places) -->
-                    <div class="bg-white border-b border-gray-200 p-4 flex gap-3 overflow-x-auto no-scrollbar items-center">
-                        <span class="text-xs font-bold text-gray-400 uppercase tracking-wider mr-2">I am at:</span>
-                        ${places.map(p => `
-                            <button onclick="window.selectPlace('${p.id}')" 
-                                class="${p.color} px-4 py-2 rounded-full border text-sm font-semibold whitespace-nowrap transition-all ${selectedPlace === p.id ? 'ring-2 ring-offset-2 ring-gray-400 scale-105 shadow-md' : 'opacity-70 hover:opacity-100'}">
-                                ${p.name}
-                            </button>
-                        `).join('')}
-                        
-                        <button onclick="window.addPlace()" class="w-8 h-8 flex items-center justify-center rounded-full border border-dashed border-gray-400 text-gray-400 hover:text-blue-500 hover:border-blue-500 transition">
-                            <i class="fa-solid fa-plus"></i>
-                        </button>
-                        
-                        <div class="ml-auto text-sm text-gray-500 hidden md:block">
-                            Select a place, then tap the grid.
-                        </div>
-                    </div>
-
-                    <!-- GRID -->
+                    ${renderToolbar(places)}
+                    
+                    <!-- SCHEDULER VIEW -->
                     <div class="flex-1 overflow-auto bg-gray-50 p-4">
-                        <div class="inline-block min-w-full bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            
-                            <!-- Header Row (Dates) -->
-                            <div class="flex border-b border-gray-200">
-                                <div class="w-32 md:w-48 p-3 flex-shrink-0 bg-gray-50 border-r border-gray-200 font-bold text-gray-500 text-sm flex items-center">
-                                    Team Member
-                                </div>
-                                ${dates.map(d => {
-                                    const isToday = d.toDateString() === new Date().toDateString();
-                                    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
-                                    return `
-                                    <div class="w-20 md:w-24 p-2 flex-shrink-0 text-center border-r border-gray-100 ${isToday ? 'bg-blue-50' : ''} ${isWeekend ? 'bg-gray-50' : ''}">
-                                        <div class="text-xs text-gray-400 uppercase font-bold">${d.toLocaleDateString('en-US', {weekday: 'short'})}</div>
-                                        <div class="text-sm font-bold text-gray-700 ${isToday ? 'text-blue-600' : ''}">${d.getDate()}</div>
-                                    </div>
-                                    `;
-                                }).join('')}
-                            </div>
-
-                            <!-- User Rows -->
-                            ${userIds.map(uid => {
-                                const user = users[uid];
-                                const isMe = currentUser && currentUser.uid === uid;
-                                
-                                return `
-                                <div class="flex border-b border-gray-100 hover:bg-gray-50 transition-colors group">
-                                    <!-- User Name Column -->
-                                    <div class="w-32 md:w-48 p-3 flex-shrink-0 border-r border-gray-200 flex items-center bg-white z-10 sticky left-0 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
-                                        <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-gray-200 to-gray-300 flex items-center justify-center text-gray-600 font-bold text-xs mr-3">
-                                            ${user.name.charAt(0).toUpperCase()}
-                                        </div>
-                                        <div class="truncate">
-                                            <div class="text-sm font-medium text-gray-900 truncate">${user.name} ${isMe ? '<span class="text-xs text-blue-500 bg-blue-50 px-1 rounded ml-1">(You)</span>' : ''}</div>
-                                        </div>
-                                    </div>
-
-                                    <!-- Date Cells -->
-                                    ${dates.map(d => {
-                                        const dateKey = formatDateKey(d);
-                                        const schedKey = `${uid}_${dateKey}`;
-                                        const placeId = schedule[schedKey];
-                                        const place = (placeId && placeId !== 'CLEARED') ? places.find(p => p.id === placeId) : null;
-                                        
-                                        // Only I can edit my row
-                                        const isEditable = isMe;
-                                        const isToday = d.toDateString() === new Date().toDateString();
-                                        
-                                        return `
-                                        <div onclick="${isEditable ? `window.toggleCell('${dateKey}')` : ''}" 
-                                            class="w-20 md:w-24 h-14 md:h-16 flex-shrink-0 border-r border-gray-100 border-dotted relative flex items-center justify-center transition-all
-                                                ${isEditable ? 'cursor-pointer hover:bg-gray-100' : 'cursor-default'}
-                                                ${isToday ? 'bg-blue-50/30' : ''}
-                                            ">
-                                            
-                                            ${place ? `
-                                                <div class="${place.color} text-xs font-semibold px-2 py-1 rounded shadow-sm max-w-[90%] truncate text-center select-none pointer-events-none transform transition-transform group-hover:scale-105">
-                                                    ${place.name}
-                                                </div>
-                                            ` : `
-                                                ${isEditable ? '<div class="opacity-0 hover:opacity-100 text-gray-300 text-xl">+</div>' : ''}
-                                            `}
-                                        </div>
-                                        `;
-                                    }).join('')}
-                                </div>
-                                `;
-                            }).join('')}
-
-                        </div>
+                        ${viewMode === 'columns' 
+                            ? renderColumnView(dates, userIds, users, schedule, places) 
+                            : renderRowView(dates, userIds, users, schedule, places)
+                        }
                     </div>
                 </div>
             `;
