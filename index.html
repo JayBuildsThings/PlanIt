@@ -73,13 +73,12 @@
         // --- 1. CONFIGURATION ---
         // TODO: REPLACE THIS WITH YOUR FIREBASE CONFIG
         const firebaseConfig = {
-          apiKey: "AIzaSyBsAeABlr_WtDwGgrYQJWSEYPnsERpN8kQ",
-          authDomain: "planit-8962e.firebaseapp.com",
-          projectId: "planit-8962e",
-          storageBucket: "planit-8962e.firebasestorage.app",
-          messagingSenderId: "796305375372",
-          appId: "1:796305375372:web:4e7af1f6be01a2f507fba9",
-          measurementId: "G-J19F59WR92"
+            apiKey: "", 
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
         };
 
         // Initialize Firebase
@@ -93,6 +92,7 @@
         let groupData = null;
         let unsubscribeGroup = null;
         let selectedPlace = null; // Currently selected tool/place
+        let isAuthReady = false; // New flag to track authentication status
         
         // Use a fixed App ID for the path to ensure consistency
         const APP_ID = 'planit-scheduler-v1';
@@ -100,16 +100,26 @@
         // --- 2. AUTHENTICATION & INIT ---
         async function initApp() {
             try {
-                // Anonymous Auth (Required for Firestore Rules)
-                await signInAnonymously(auth);
+                // Anonymous Auth is required, but we listen to the state change
+                signInAnonymously(auth).catch(e => {
+                    console.error("Anonymous Sign-in failed:", e);
+                    // Still proceed to listen, as a user might be signed in from a previous session
+                });
                 
+                // Use onAuthStateChanged to reliably determine the user's status
                 onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        currentUser = user;
-                        // Check URL hash to see if we are joining a group
+                    currentUser = user;
+                    if (!isAuthReady) {
+                        isAuthReady = true;
+                        // Once the initial auth state is determined, handle routing
                         handleRouting();
                     }
+                    // Re-render if auth state changes after initial load (e.g., if we were previously null)
+                    if (currentGroupId) {
+                        renderScheduler();
+                    }
                 });
+
             } catch (error) {
                 console.error("Auth Error:", error);
                 alert("Could not connect to database. Check console.");
@@ -118,6 +128,8 @@
 
         // --- 3. ROUTING ---
         function handleRouting() {
+            if (!isAuthReady) return; // Prevent routing until auth state is known
+
             const hash = window.location.hash.substring(1); // Remove #
             if (hash.startsWith('group/')) {
                 const groupId = hash.split('/')[1];
@@ -238,7 +250,7 @@
         }
 
         async function registerUserInGroup(name) {
-            if (!currentUser || !currentGroupId) return;
+            if (!currentUser || !currentGroupId || !groupData) return; // Added check for groupData
             
             // Check if already registered to avoid unnecessary writes
             if (groupData.users && groupData.users[currentUser.uid] && groupData.users[currentUser.uid].name === name) return;
@@ -294,11 +306,10 @@
 
         // Update Schedule Cell
         window.toggleCell = async (dateStr) => {
-            if (!currentUser) return;
-            
-            // If no tool selected, do nothing or clear? Let's assume toggle requires selection
-            // Or if clicked same cell, clear it.
-            
+            // CRITICAL GUARD CLAUSE: Ensure user and group data are ready before writing
+            if (!currentUser) return alert("Still connecting. Please wait a moment.");
+            if (!currentGroupId || !groupData) return;
+
             const key = `${currentUser.uid}_${dateStr}`;
             const currentVal = groupData.schedule ? groupData.schedule[key] : null;
             
@@ -308,33 +319,29 @@
             if (currentVal === selectedPlace) {
                 newVal = null; 
             } else if (!selectedPlace) {
-                // If no place selected, maybe treat as eraser?
-                // For UX simplicity: if nothing selected, do nothing, alert user
+                // If no place selected, alert user
                 alert("Select a place from the top bar first!");
                 return;
             }
 
-            // Optimistic update (UI will flicker if we wait for server, but simple is better here)
-            // Actually, Firestore listener is fast. Let's just write.
+            // Optimistic update: Firestore listener will handle the official update
             
             const groupRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'groups', currentGroupId);
             
-            // Use FieldValue.delete() if null, but updateDoc with dot notation requires importing deleteField
-            // Simpler: Just set it to null or empty string.
-            // Using a plain object merge
-            
             const updatePayload = {};
-            // If we want to delete, we technically need deleteField(), but setting to null is fine for logic
-            // We will just filter nulls in render
-            if (newVal === null) {
-                // Firestore deleteField is tricky in vanilla module import without explicit import
-                // Let's import it dynamically or just set to "CLEARED"
-                 updatePayload[`schedule.${key}`] = "CLEARED";
-            } else {
-                updatePayload[`schedule.${key}`] = newVal;
-            }
+            // If newVal is null, mark it as CLEARED for simplicity (Firestore won't accept null in an object key path update)
+            updatePayload[`schedule.${key}`] = newVal === null ? "CLEARED" : newVal;
+            
 
-            await updateDoc(groupRef, updatePayload);
+            try {
+                 // Update the UI optimistically right before the write to prevent the flash of null
+                 // Note: We don't have a good way to update groupData directly without breaking the immutable structure of the snapshot,
+                 // so we rely on the Firestore listener which is very fast.
+                 await updateDoc(groupRef, updatePayload);
+            } catch (e) {
+                console.error("Failed to update schedule:", e);
+                alert("Failed to save schedule change. Check console.");
+            }
         }
 
         // --- 6. RENDERING ---
